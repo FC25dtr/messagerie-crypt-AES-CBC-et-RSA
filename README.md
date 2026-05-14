@@ -153,4 +153,5 @@ Lance toujours Bob avant Alice — le serveur attend la connexion de Bob en prem
 - Clés RSA de 512 bits — suffisant pour un projet pédagogique, mais en production le minimum est 2048 bits
 - Pas d'authentification de l'expéditeur — Alice ne prouve pas son identité à Bob, n'importe qui pourrait se connecter à sa place (une signature numérique RSA résoudrait ça)
 - Un seul message par session — il faudrait une boucle pour une vraie conversation
- 
+
+ Suite du projet en cours
