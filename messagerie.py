@@ -8,6 +8,20 @@ import hashlib
 
 bob_pub,bob_priv,n = gencle_RSAA()
 
+def signer(cle_privee, message):
+    n, d = cle_privee
+    hash_message = hashlib.sha256(message.encode()).hexdigest()
+    hash_entier = message_vers_entier(hash_message)
+    signature = math_utile.Exponentiation(hash_entier, d, n)
+    return signature
+
+def verifier(cle_publique_alice, signature, message):
+    n, e = cle_publique_alice
+    hash_entier = math_utile.Exponentiation(signature, e, n)
+    hash_recu = entier_vers_texte(hash_entier)
+    hash_message = hashlib.sha256(message.encode()).hexdigest()
+    return hash_recu == hash_message
+
 cle_aes = ""
 for i in range(16):
     cle_aes += chr(random.randint(0,255))
