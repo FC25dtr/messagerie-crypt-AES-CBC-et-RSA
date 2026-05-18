@@ -158,7 +158,7 @@ def gen_cles(k):
             W_[i][j] = W_[i-4][j] ^ temp[j]
     return transforme(W_)
 
-def transforme(W):
+def transforme(W):  
     L=[0]*4
     for i in range(4):
         L[i] = [0]*44
