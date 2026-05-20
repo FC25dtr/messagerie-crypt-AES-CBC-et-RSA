@@ -1,6 +1,6 @@
-# Messagerie Chiffrée — RSA + AES-CBC
+# Messagerie Chiffrée — RSA + AES-CBC + DH
 
-Une messagerie chiffrée de bout en bout implémentée from scratch en Python, sans bibliothèque cryptographique externe. RSA et AES-128 sont entièrement codés à la main.
+Une messagerie chiffrée de bout en bout implémentée from scratch en Python, sans bibliothèque cryptographique externe. RSA, AES-128 et l'échange de clé Diffie-Hellman sont entièrement codés à la main.
 
 ---
 
@@ -10,14 +10,14 @@ Une messagerie chiffrée de bout en bout implémentée from scratch en Python, s
 Projet/
 ├── Projet_RSA/
 │   ├── __init__.py
-│   ├── gencleRSA.py         # Génération de clés RSA, chiffrement/déchiffrement par blocs
+│   ├── gencleRSA.py         # Génération de clés RSA, chiffrement/déchiffrement par blocs, signature
 │   └── math_utile.py        # PGCD, inverse modulaire, exponentiation rapide
 ├── chiffrement_AES/
 │   ├── __init__.py
 │   └── AES_python.py        # AES-128 complet avec mode CBC
-├── diffie_hellman.py         # Paramètres DH-2048 et fonctions d'échange de clé (en cours)
-├── messagerie.py             # Protocole complet : RSA + AES + HMAC + signature
-├── serveur.py                # Relais réseau multi-utilisateurs (ne déchiffre rien)
+├── diffie_hellman.py         # Paramètres DH-2048 et fonctions d'échange de clé éphémère
+├── messagerie.py             # Fonctions HMAC et signature, colle entre RSA et AES
+├── serveur.py                # Relais réseau multi-utilisateurs, ne déchiffre rien
 └── client.py                 # Interface utilisateur avec commandes
 ```
 
@@ -27,33 +27,43 @@ Projet/
 
 ### Le protocole
 
-La messagerie repose sur un chiffrement hybride — une technique standard utilisée par TLS, Signal ou PGP. RSA est solide mais lent, AES est rapide mais nécessite un échange de clé sécurisé. On combine les deux.
+La messagerie repose sur un chiffrement hybride avec Perfect Forward Secrecy. À chaque message la clé de chiffrement est différente et éphémère — elle ne passe jamais sur le réseau et n'existe plus après le message.
 
 À chaque message envoyé :
 
-1. L'expéditeur génère une clé AES et une clé MAC aléatoires
-2. Il chiffre ces deux clés avec la clé publique RSA du destinataire
-3. Il signe le message avec sa clé privée RSA pour prouver son identité
-4. Il chiffre le message avec AES-128 en mode CBC
-5. Il calcule une empreinte HMAC-SHA256 du message chiffré
-6. Il envoie le tout au serveur qui relaie au destinataire
-7. Le destinataire vérifie le HMAC — si invalide il rejette le message
-8. Il déchiffre les clés avec sa clé privée RSA
-9. Il vérifie la signature pour authentifier l'expéditeur
-10. Il déchiffre le message avec AES-CBC
+1. L'expéditeur initie un échange Diffie-Hellman — il génère une valeur secrète `a` et envoie `A = g^a mod p` au destinataire
+2. Le destinataire génère sa propre valeur secrète `b` et renvoie `B = g^b mod p`
+3. Les deux calculent indépendamment la même clé commune `g^(ab) mod p` sans jamais se l'envoyer
+4. Cette clé est hachée en SHA-256 pour obtenir la clé AES de 16 octets
+5. L'expéditeur signe le message avec sa clé privée RSA pour prouver son identité
+6. Il chiffre le message avec AES-128 en mode CBC
+7. Il calcule une empreinte HMAC-SHA256 du message chiffré avec une clé MAC chiffrée par RSA
+8. Il envoie le tout au serveur qui relaie au destinataire
+9. Le destinataire vérifie le HMAC — si invalide il rejette le message
+10. Il déchiffre la clé MAC avec sa clé privée RSA
+11. Il recalcule la clé AES depuis sa valeur DH stockée en mémoire
+12. Il vérifie la signature pour authentifier l'expéditeur
+13. Il déchiffre le message avec AES-CBC
 
 ```
-Expéditeur                   Serveur                   Destinataire
-     |                          |                            |
-     |  { cle_aes_chiffree,     |                            |
-     |    cle_mac_chiffree,     |        même paquet         |
-     |    iv,                   | -------------------------> |
-     |    message_chiffre_AES,  |                            |
-     |    hmac,                 |                            |
-     |    signature,            |                            |
-     |    cle_pub_expediteur }  |                            |
-     | -----------------------> |                            |
+Expéditeur                        Serveur                   Destinataire
+     |                               |                            |
+     |  dh_init { A = g^a mod p }    |      dh_init              |
+     | ----------------------------> | -------------------------> |
+     |                               |                            |
+     |              dh_response { B = g^b mod p }                |
+     | <--------------------------------------------------------- |
+     |                               |                            |
+     |  { cle_mac_chiffree_RSA,      |                            |
+     |    iv,                        |        même paquet         |
+     |    message_chiffre_AES,       | -------------------------> |
+     |    hmac,                      |                            |
+     |    signature,                 |                            |
+     |    cle_pub_expediteur }       |                            |
+     | ----------------------------> |                            |
 ```
+
+La clé AES ne transite jamais sur le réseau. Le serveur voit passer `A` et `B` en clair mais sans `a` ou `b` il lui est mathématiquement impossible de calculer `g^(ab) mod p`.
 
 ---
 
@@ -61,7 +71,7 @@ Expéditeur                   Serveur                   Destinataire
 
 **Fichier :** `Projet_RSA/gencleRSA.py`
 
-RSA est un algorithme de chiffrement asymétrique — ce qui est chiffré avec la clé publique ne peut être déchiffré qu'avec la clé privée correspondante. C'est ce qui permet d'envoyer une clé secrète sans que personne d'autre puisse la lire.
+RSA est un algorithme de chiffrement asymétrique — ce qui est chiffré avec la clé publique ne peut être déchiffré qu'avec la clé privée correspondante.
 
 ### Génération des clés
 
@@ -72,11 +82,7 @@ RSA est un algorithme de chiffrement asymétrique — ce qui est chiffré avec l
 
 ### Chiffrement par blocs
 
-RSA ne peut chiffrer qu'un entier inférieur à n. Pour les messages longs, le texte est découpé en blocs, chaque bloc est converti en entier puis chiffré séparément.
-
-```
-message → découpage en blocs → conversion entier → chiffrement RSA → liste de blocs chiffrés
-```
+RSA ne peut chiffrer qu'un entier inférieur à n. Pour les messages longs, le texte est découpé en blocs, chaque bloc est converti en entier puis chiffré séparément. Dans ce protocole RSA sert uniquement à chiffrer la clé MAC et à signer les messages — pas à chiffrer les messages eux-mêmes.
 
 ### Signature numérique
 
@@ -90,11 +96,23 @@ La signature permet de vérifier qu'un message vient bien de celui qui prétend 
 
 ---
 
+## Diffie-Hellman — Perfect Forward Secrecy
+
+**Fichier :** `diffie_hellman.py`
+
+Diffie-Hellman permet à deux personnes de construire une clé secrète commune sans jamais se l'envoyer. Même si un attaquant enregistre tous les messages aujourd'hui et casse la clé RSA dans 10 ans, il ne pourra pas déchiffrer les anciens messages — les valeurs `a` et `b` n'ont jamais existé en dehors de la mémoire vive et n'existent plus.
+
+Les paramètres utilisés sont ceux du groupe DH-2048 défini par le RFC 3526 — un nombre premier de 2048 bits reconnu et standardisé, le même générateur `g = 2`.
+
+Chaque session génère de nouvelles valeurs `a` et `b` — c'est pour ça qu'on parle de clés éphémères.
+
+---
+
 ## AES-128 — Implémenté from scratch
 
 **Fichier :** `chiffrement_AES/AES_python.py`
 
-AES est un algorithme de chiffrement symétrique — la même clé sert à chiffrer et à déchiffrer. Il est très rapide et c'est lui qui chiffre le contenu des messages.
+AES est un algorithme de chiffrement symétrique — la même clé sert à chiffrer et à déchiffrer. C'est lui qui chiffre le contenu des messages.
 
 ### Ce qui est implémenté
 
@@ -106,7 +124,7 @@ AES est un algorithme de chiffrement symétrique — la même clé sert à chiff
 
 ### Mode CBC (Cipher Block Chaining)
 
-Sans mode d'opération, AES chiffre chaque bloc indépendamment — un même bloc de texte donnera toujours le même bloc chiffré, ce qui laisse fuiter des informations. Le mode CBC résout ça en XORant chaque bloc avec le bloc chiffré précédent avant de le chiffrer. Un IV aléatoire est généré à chaque message pour garantir que deux messages identiques donnent deux chiffrés différents.
+Le mode CBC XOR chaque bloc avec le bloc chiffré précédent avant de le chiffrer. Un IV aléatoire est généré à chaque message pour garantir que deux messages identiques donnent deux chiffrés différents.
 
 ```
 message → padding → blocs → XOR avec IV/bloc précédent → AES → blocs chiffrés
@@ -116,27 +134,25 @@ message → padding → blocs → XOR avec IV/bloc précédent → AES → blocs
 
 ## Intégrité — HMAC-SHA256
 
-Le chiffrement seul ne suffit pas. Sans vérification d'intégrité, un attaquant positionné entre les deux interlocuteurs pourrait modifier les octets du message chiffré — le destinataire déchiffrerait alors un message corrompu sans s'en rendre compte.
+Sans vérification d'intégrité, un attaquant positionné entre les deux interlocuteurs pourrait modifier les octets du message chiffré sans que personne s'en rende compte.
 
-Le HMAC fonctionne comme un sceau : l'expéditeur calcule une empreinte du message chiffré avec une clé secrète, et le destinataire recalcule cette empreinte à la réception. Si elles diffèrent, le message a été modifié et il est rejeté immédiatement.
+Le HMAC fonctionne comme un sceau : l'expéditeur calcule une empreinte du message chiffré avec une clé secrète, et le destinataire recalcule cette empreinte à la réception. Si elles diffèrent, le message est rejeté immédiatement.
 
-La clé MAC est distincte de la clé AES et transmise chiffrée par RSA comme elle.
+La clé MAC est distincte de la clé AES et transmise chiffrée par RSA.
 
 ---
 
 ## Architecture réseau
 
-Le serveur est un relais neutre qui gère plusieurs utilisateurs simultanément via des threads. Il ne connaît pas les clés, ne déchiffre rien et ne stocke rien. Il maintient un dictionnaire des utilisateurs connectés avec leurs clés publiques et leurs sockets, et route les messages vers le bon destinataire.
+Le serveur est un relais neutre qui gère plusieurs utilisateurs simultanément via des threads. Il ne connaît pas les clés, ne déchiffre rien et ne stocke rien. Il maintient un dictionnaire des utilisateurs connectés avec leurs clés publiques RSA et leurs sockets, et route les messages vers le bon destinataire.
 
-Chaque utilisateur ouvre deux connexions au serveur — une pour envoyer, une pour recevoir — ce qui permet d'envoyer et de recevoir en même temps sans blocage.
+Chaque utilisateur ouvre trois connexions au serveur — une pour envoyer, une pour recevoir, une dédiée à l'échange Diffie-Hellman — ce qui évite les conflits entre les threads d'envoi et de réception.
 
 Les données sont sérialisées en JSON avant d'être envoyées sur le socket TCP.
 
 ---
 
 ## Commandes disponibles
-
-Une fois connecté, l'interface fonctionne avec des commandes :
 
 ```
 /liste       — afficher les utilisateurs connectés
@@ -170,26 +186,12 @@ python client.py
 # Ton pseudo : alice
 ```
 
-Chaque utilisateur choisit un pseudo à la connexion. La génération des clés RSA se fait automatiquement au démarrage.
-
----
-
-## En cours de développement
-
-### Perfect Forward Secrecy via Diffie-Hellman
-
-Le fichier `diffie_hellman.py` contient les bases d'un échange de clé Diffie-Hellman en cours d'apprentissage et d'implémentation.
-
-L'idée est que même si la clé privée RSA d'un utilisateur est compromise un jour, les messages passés restent protégés — chaque session aurait eu une clé éphémère différente générée via DH, qui n'existe plus après la session.
-
-Le protocole DH repose sur la difficulté du logarithme discret : deux parties peuvent calculer une clé commune `g^(ab) mod p` sans jamais se l'envoyer directement, en échangeant uniquement `g^a mod p` et `g^b mod p` en public.
-
-Les paramètres utilisés sont ceux du groupe DH-2048 défini par le RFC 3526 — un nombre premier de 2048 bits reconnu et standardisé.
+Chaque utilisateur choisit un pseudo à la connexion. La génération des clés RSA 2048 bits se fait automatiquement au démarrage.
 
 ---
 
 ## Limites connues
 
-- Perfect Forward Secrecy pas encore intégré dans le protocole
 - Taille des paquets limitée par le buffer réseau — les très longs messages pourraient être tronqués
 - Pas de persistance — l'historique est perdu à la déconnexion
+- Pas de chiffrement de la communication avec le serveur pour l'échange des pseudos et clés publiques au démarrage
